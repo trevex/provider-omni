@@ -1,9 +1,10 @@
 /.cache
 /.work
 /_output
-cover.out
 /vendor
 /.vendor-new
+/.direnv
+cover.out
 .vscode
 .idea
 .DS_Store
