@@ -20,15 +20,17 @@ package apis
 import (
 	"k8s.io/apimachinery/pkg/runtime"
 
-	samplev1alpha1 "github.com/crossplane/provider-omni/apis/sample/v1alpha1"
-	omniv1alpha1 "github.com/crossplane/provider-omni/apis/v1alpha1"
+	clusterv1alpha1 "github.com/trevex/provider-omni/apis/cluster/v1alpha1"
+	machinev1alpha1 "github.com/trevex/provider-omni/apis/machine/v1alpha1"
+	omniv1alpha1 "github.com/trevex/provider-omni/apis/v1alpha1"
 )
 
 func init() {
 	// Register the types with the Scheme so the components can map objects to GroupVersionKinds and back
 	AddToSchemes = append(AddToSchemes,
 		omniv1alpha1.SchemeBuilder.AddToScheme,
-		samplev1alpha1.SchemeBuilder.AddToScheme,
+		machinev1alpha1.SchemeBuilder.AddToScheme,
+		clusterv1alpha1.SchemeBuilder.AddToScheme,
 	)
 }
 

@@ -1,4 +1,4 @@
-module github.com/crossplane/provider-omni
+module github.com/trevex/provider-omni
 
 go 1.21
 

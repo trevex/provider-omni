@@ -37,10 +37,10 @@ import (
 	"github.com/crossplane/crossplane-runtime/pkg/ratelimiter"
 	"github.com/crossplane/crossplane-runtime/pkg/resource"
 
-	"github.com/crossplane/provider-omni/apis"
-	"github.com/crossplane/provider-omni/apis/v1alpha1"
-	omni "github.com/crossplane/provider-omni/internal/controller"
-	"github.com/crossplane/provider-omni/internal/features"
+	"github.com/trevex/provider-omni/apis"
+	"github.com/trevex/provider-omni/apis/v1alpha1"
+	omni "github.com/trevex/provider-omni/internal/controller"
+	"github.com/trevex/provider-omni/internal/features"
 )
 
 func main() {
