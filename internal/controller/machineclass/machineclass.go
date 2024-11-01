@@ -20,8 +20,12 @@ import (
 	"context"
 	"fmt"
 
+	cosiresource "github.com/cosi-project/runtime/pkg/resource"
 	"github.com/pkg/errors"
+	"github.com/siderolabs/omni/client/api/omni/specs"
 	omniclient "github.com/siderolabs/omni/client/pkg/client"
+	"github.com/siderolabs/omni/client/pkg/omni/resources"
+	resourcesomni "github.com/siderolabs/omni/client/pkg/omni/resources/omni"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -45,6 +49,8 @@ const (
 	errGetCreds        = "cannot get credentials"
 
 	errNewClient = "cannot create new Service"
+
+	// TODO: move static string error message up here...
 )
 
 // Setup adds a controller that reconciles MachineClass managed resources.
@@ -135,22 +141,37 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 		return managed.ExternalObservation{}, errors.New(errNotMachineClass)
 	}
 
+	st := c.client.Omni().State()
+	res, err := st.Get(ctx, pointerForCR(cr))
+	if err != nil {
+		//lint:ignore nilerr we intentionally ignore the error as it indicates resource not found
+		return managed.ExternalObservation{ResourceExists: false}, nil
+	}
+
+	actualMC, ok := res.(*resourcesomni.MachineClass)
+	if !ok {
+		return managed.ExternalObservation{}, errors.New("resource is not a machineclass")
+	}
+
+	expectedMC := machineClassForCR(cr)
+	// Let's copy over metadata to minimize the diff
+	err = syncOmniMetadata(expectedMC, actualMC)
+	if err != nil {
+		return managed.ExternalObservation{}, errors.Wrap(err, "failed to sync metadata")
+	}
+
 	// These fmt statements should be removed in the real implementation.
 	fmt.Printf("Observing: %+v", cr)
+	fmt.Printf("  Actual: %+v", actualMC)
+	fmt.Printf("  Expected: %+v", expectedMC)
+
+	if !cosiresource.Equal(actualMC, expectedMC) {
+		return managed.ExternalObservation{ResourceExists: true, ResourceUpToDate: false}, nil
+	}
 
 	return managed.ExternalObservation{
-		// Return false when the external resource does not exist. This lets
-		// the managed resource reconciler know that it needs to call Create to
-		// (re)create the resource, or that it has successfully been deleted.
-		ResourceExists: true,
-
-		// Return false when the external resource exists, but it not up to date
-		// with the desired managed resource state. This lets the managed
-		// resource reconciler know that it needs to call Update.
-		ResourceUpToDate: true,
-
-		// Return any details that may be required to connect to the external
-		// resource. These will be stored as the connection secret.
+		ResourceExists:    true,
+		ResourceUpToDate:  true,
 		ConnectionDetails: managed.ConnectionDetails{},
 	}, nil
 }
@@ -163,11 +184,12 @@ func (c *external) Create(ctx context.Context, mg resource.Managed) (managed.Ext
 
 	fmt.Printf("Creating: %+v", cr)
 
+	err := c.client.Omni().State().Create(ctx, machineClassForCR(cr))
 	return managed.ExternalCreation{
 		// Optionally return any details that may be required to connect to the
 		// external resource. These will be stored as the connection secret.
 		ConnectionDetails: managed.ConnectionDetails{},
-	}, nil
+	}, err
 }
 
 func (c *external) Update(ctx context.Context, mg resource.Managed) (managed.ExternalUpdate, error) {
@@ -177,6 +199,28 @@ func (c *external) Update(ctx context.Context, mg resource.Managed) (managed.Ext
 	}
 
 	fmt.Printf("Updating: %+v", cr)
+
+	st := c.client.Omni().State()
+	res, err := st.Get(ctx, pointerForCR(cr))
+	if err != nil {
+		return managed.ExternalUpdate{}, errors.Wrap(err, "failed to fetch resource")
+	}
+
+	oldMC, ok := res.(*resourcesomni.MachineClass)
+	if !ok {
+		return managed.ExternalUpdate{}, errors.New("resource is not a machineclass")
+	}
+
+	newMC := machineClassForCR(cr)
+	err = syncOmniMetadata(newMC, oldMC)
+	if err != nil {
+		return managed.ExternalUpdate{}, errors.Wrap(err, "failed to sync metadata")
+	}
+
+	err = st.Update(ctx, newMC)
+	if err != nil {
+		return managed.ExternalUpdate{}, errors.Wrap(err, "failed to update machineclass")
+	}
 
 	return managed.ExternalUpdate{
 		// Optionally return any details that may be required to connect to the
@@ -193,5 +237,40 @@ func (c *external) Delete(ctx context.Context, mg resource.Managed) (managed.Ext
 
 	fmt.Printf("Deleting: %+v", cr)
 
-	return managed.ExternalDelete{}, nil
+	err := c.client.Omni().State().Destroy(ctx, pointerForCR(cr))
+	return managed.ExternalDelete{}, err
+}
+
+func machineClassForCR(cr *v1alpha1.MachineClass) *resourcesomni.MachineClass {
+	mc := resourcesomni.NewMachineClass(resources.DefaultNamespace, cr.Spec.ForProvider.Name)
+	spec := mc.TypedSpec().Value
+	fp := &cr.Spec.ForProvider
+	spec.MatchLabels = make([]string, 0)
+	spec.AutoProvision = &specs.MachineClassSpec_Provision{
+		ProviderId: fp.AutoProvision.ProviderID,
+		KernelArgs: fp.AutoProvision.KernelArgs,
+		MetaValues: make([]*specs.MetaValue, 0),
+		ProviderData: fmt.Sprintf("cores: %d\nmemory: %d\ndisk_size: %darchitecture: %s",
+			fp.AutoProvision.Resources.CPU,
+			fp.AutoProvision.Resources.Memory,
+			fp.AutoProvision.Resources.DiskSize,
+			fp.AutoProvision.Resources.Architecture,
+		),
+		GrpcTunnel: specs.GrpcTunnelMode_UNSET,
+	}
+	return mc
+}
+
+func pointerForCR(cr *v1alpha1.MachineClass) cosiresource.Pointer {
+	return cosiresource.NewMetadata(resources.DefaultNamespace, resourcesomni.MachineClassType, cr.Spec.ForProvider.Name, cosiresource.VersionUndefined)
+}
+
+func syncOmniMetadata(expectedMC, actualMC *resourcesomni.MachineClass) error {
+	expectedMC.Metadata().SetVersion(actualMC.Metadata().Version())
+	expectedMC.Metadata().SetUpdated(actualMC.Metadata().Updated())
+	expectedMC.Metadata().SetCreated(actualMC.Metadata().Created())
+	expectedMC.Metadata().Finalizers().Set(*actualMC.Metadata().Finalizers())
+	err := expectedMC.Metadata().SetOwner(actualMC.Metadata().Owner())
+	expectedMC.Metadata().SetPhase(actualMC.Metadata().Phase())
+	return err
 }

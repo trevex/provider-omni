@@ -103,11 +103,11 @@ spec:
                     - providerID
                     - resources
                     type: object
-                  configurableField:
+                  name:
                     type: string
                 required:
                 - autoprovision
-                - configurableField
+                - name
                 type: object
               managementPolicies:
                 default:
@@ -283,8 +283,8 @@ spec:
                 description: MachineClassObservation are the observable fields of
                   a MachineClass.
                 properties:
-                  observableField:
-                    type: string
+                  version:
+                    type: integer
                 type: object
               conditions:
                 description: Conditions of the resource.

@@ -40,13 +40,13 @@ type MachineClassAutoprovision struct {
 
 // MachineClassParameters are the configurable fields of a MachineClass.
 type MachineClassParameters struct {
-	Autoprovision     MachineClassAutoprovision `json:"autoprovision"`
-	ConfigurableField string                    `json:"configurableField"`
+	Name          string                    `json:"name"`
+	AutoProvision MachineClassAutoprovision `json:"autoprovision"`
 }
 
 // MachineClassObservation are the observable fields of a MachineClass.
 type MachineClassObservation struct {
-	ObservableField string `json:"observableField,omitempty"`
+	Version uint `json:"version,omitempty"`
 }
 
 // A MachineClassSpec defines the desired state of a MachineClass.
