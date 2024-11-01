@@ -26,6 +26,8 @@ GOLANGCILINT_VERSION = 1.61.0
 # ====================================================================================
 # Setup Kubernetes tools
 
+KIND_VERSION = v0.24.0
+KUBECTL_VERSION = v1.30.0
 -include build/makelib/k8s_tools.mk
 
 # ====================================================================================
@@ -43,6 +45,14 @@ XPKG_REG_ORGS ?= xpkg.upbound.io/crossplane
 XPKG_REG_ORGS_NO_PROMOTE ?= xpkg.upbound.io/crossplane
 XPKGS = provider-omni
 -include build/makelib/xpkg.mk
+
+# ====================================================================================
+# End to End Testing
+CROSSPLANE_VERSION = 1.17.0
+CROSSPLANE_NAMESPACE = crossplane-system
+KIND_CLUSTER_NAME = $(PROJECT_NAME)-dev
+-include build/makelib/local.xpkg.mk
+-include build/makelib/controlplane.mk
 
 # NOTE(hasheddan): we force image building to happen prior to xpkg build so that
 # we ensure image is present in daemon.
@@ -88,20 +98,16 @@ run: go.build
 	@# To see other arguments that can be provided, run the command with --help instead
 	$(GO_OUT_DIR)/provider --debug
 
-dev: $(KIND) $(KUBECTL)
-	@$(INFO) Creating kind cluster
-	@$(KIND) create cluster --name=$(PROJECT_NAME)-dev
-	@$(KUBECTL) cluster-info --context kind-$(PROJECT_NAME)-dev
-	@$(INFO) Installing Crossplane CRDs
-	@$(KUBECTL) apply --server-side -k https://github.com/crossplane/crossplane//cluster?ref=master
-	@$(INFO) Installing Provider Omni CRDs
-	@$(KUBECTL) apply -R -f package/crds
-	@$(INFO) Starting Provider Omni controllers
-	@$(GO) run cmd/provider/main.go --debug
+local-dev: controlplane.up
+local-deploy: build controlplane.up local.xpkg.deploy.provider.$(PROJECT_NAME)
+	@$(INFO) running locally built provider
+	@$(KUBECTL) wait provider.pkg $(PROJECT_NAME) --for condition=Healthy --timeout 5m
+	@$(KUBECTL) -n $(CROSSPLANE_NAMESPACE) wait --for=condition=Available deployment --all --timeout=5m
+	@$(OK) running locally built provider
 
-dev-clean: $(KIND) $(KUBECTL)
+local-clean: $(KIND) $(KUBECTL)
 	@$(INFO) Deleting kind cluster
-	@$(KIND) delete cluster --name=$(PROJECT_NAME)-dev
+	@$(KIND) delete cluster --name=$(KIND_CLUSTER_NAME)
 
 .PHONY: submodules fallthrough test-integration run dev dev-clean
 
