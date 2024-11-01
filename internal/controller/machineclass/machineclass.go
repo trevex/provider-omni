@@ -250,7 +250,7 @@ func machineClassForCR(cr *v1alpha1.MachineClass) *resourcesomni.MachineClass {
 		ProviderId: fp.AutoProvision.ProviderID,
 		KernelArgs: fp.AutoProvision.KernelArgs,
 		MetaValues: make([]*specs.MetaValue, 0),
-		ProviderData: fmt.Sprintf("cores: %d\nmemory: %d\ndisk_size: %darchitecture: %s",
+		ProviderData: fmt.Sprintf("cores: %d\nmemory: %d\ndisk_size: %d\narchitecture: %s",
 			fp.AutoProvision.Resources.CPU,
 			fp.AutoProvision.Resources.Memory,
 			fp.AutoProvision.Resources.DiskSize,
