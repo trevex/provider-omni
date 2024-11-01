@@ -73,10 +73,59 @@ spec:
               forProvider:
                 description: ClusterParameters are the configurable fields of a Cluster.
                 properties:
-                  configurableField:
+                  configPatch:
                     type: string
+                  controlPlane:
+                    properties:
+                      machineClass:
+                        properties:
+                          name:
+                            type: string
+                          size:
+                            type: integer
+                        required:
+                        - name
+                        - size
+                        type: object
+                    required:
+                    - machineClass
+                    type: object
+                  kubernetesVersion:
+                    type: string
+                  name:
+                    type: string
+                  talosVersion:
+                    type: string
+                  workers:
+                    items:
+                      properties:
+                        machineClass:
+                          properties:
+                            name:
+                              type: string
+                            size:
+                              type: integer
+                          required:
+                          - name
+                          - size
+                          type: object
+                        name:
+                          type: string
+                        size:
+                          type: integer
+                      required:
+                      - machineClass
+                      - name
+                      - size
+                      type: object
+                    type: array
                 required:
-                - configurableField
+                - configPatch
+                - controlPlane
+                - kubernetesVersion
+                - name
+                - talosVersion
+                - workers
                 type: object
               managementPolicies:
                 default:

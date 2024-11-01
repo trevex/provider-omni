@@ -17,11 +17,20 @@ limitations under the License.
 package cluster
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"text/template"
+	"time"
 
+	"github.com/Masterminds/sprig/v3"
+	cosiresource "github.com/cosi-project/runtime/pkg/resource"
+	cosistate "github.com/cosi-project/runtime/pkg/state"
 	"github.com/pkg/errors"
 	omniclient "github.com/siderolabs/omni/client/pkg/client"
+	"github.com/siderolabs/omni/client/pkg/client/management"
+	"github.com/siderolabs/omni/client/pkg/omni/resources"
+	omnitemplate "github.com/siderolabs/omni/client/pkg/template"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -29,6 +38,8 @@ import (
 	"github.com/crossplane/crossplane-runtime/pkg/connection"
 	"github.com/crossplane/crossplane-runtime/pkg/controller"
 	"github.com/crossplane/crossplane-runtime/pkg/event"
+	"github.com/crossplane/crossplane-runtime/pkg/logging"
+	"github.com/crossplane/crossplane-runtime/pkg/meta"
 	"github.com/crossplane/crossplane-runtime/pkg/ratelimiter"
 	"github.com/crossplane/crossplane-runtime/pkg/reconciler/managed"
 	"github.com/crossplane/crossplane-runtime/pkg/resource"
@@ -45,6 +56,40 @@ const (
 	errGetCreds     = "cannot get credentials"
 
 	errNewClient = "cannot create new Service"
+
+	clusterTemplateRaw = `
+kind: Cluster
+name: {{.Name}}
+kubernetes:
+  version: {{.KubernetesVersion}}
+talos:
+  version: {{.TalosVersion}}
+{{- if .ConfigPatch }}
+patches:
+  - name: default
+    inline:
+	  {{- .ConfigPatch | nindent 6 }}
+{{- end }}
+---
+kind: ControlPlane
+machineClass:
+  name: {{.ControlPlane.MachineClass.Name}}
+  size: {{.ControlPlane.MachineClass.Size}}
+{{- range $i, $w := .Workers }}
+---
+kind: Workers
+name: {{$w.Name}}
+machineClass:
+  name: {{$w.MachineClass.Name}}
+  size: {{$w.MachineClass.Size}}
+{{- end }}
+`
+)
+
+var (
+	clusterTemplate = template.Must(
+		template.New("cluster").Funcs(sprig.FuncMap()).Parse(clusterTemplateRaw),
+	)
 )
 
 // Setup adds a controller that reconciles Cluster managed resources.
@@ -59,8 +104,9 @@ func Setup(mgr ctrl.Manager, o controller.Options) error {
 	r := managed.NewReconciler(mgr,
 		resource.ManagedKind(v1alpha1.ClusterGroupVersionKind),
 		managed.WithExternalConnecter(&connector{
-			kube:  mgr.GetClient(),
-			usage: resource.NewProviderConfigUsageTracker(mgr.GetClient(), &apisv1alpha1.ProviderConfigUsage{}),
+			kube:   mgr.GetClient(),
+			usage:  resource.NewProviderConfigUsageTracker(mgr.GetClient(), &apisv1alpha1.ProviderConfigUsage{}),
+			logger: o.Logger,
 		}),
 		managed.WithLogger(o.Logger.WithValues("controller", name)),
 		managed.WithPollInterval(o.PollInterval),
@@ -78,8 +124,9 @@ func Setup(mgr ctrl.Manager, o controller.Options) error {
 // A connector is expected to produce an ExternalClient when its Connect method
 // is called.
 type connector struct {
-	kube  client.Client
-	usage resource.Tracker
+	kube   client.Client
+	usage  resource.Tracker
+	logger logging.Logger
 }
 
 // Connect typically produces an ExternalClient by:
@@ -115,7 +162,7 @@ func (c *connector) Connect(ctx context.Context, mg resource.Managed) (managed.E
 		return nil, errors.Wrap(err, errNewClient)
 	}
 
-	return &external{client: client, localKube: c.kube}, nil
+	return &external{client: client, localKube: c.kube, logger: c.logger}, nil
 }
 
 // An ExternalClient observes, then either creates, updates, or deletes an
@@ -123,36 +170,54 @@ func (c *connector) Connect(ctx context.Context, mg resource.Managed) (managed.E
 type external struct {
 	client    *omniclient.Client
 	localKube client.Client
+	logger    logging.Logger
 }
 
 func (c *external) Disconnect(ctx context.Context) error {
 	return c.client.Close()
 }
 
+//nolint:gocognit,gocyclo,cyclop
 func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.ExternalObservation, error) {
 	cr, ok := mg.(*v1alpha1.Cluster)
 	if !ok {
 		return managed.ExternalObservation{}, errors.New(errNotCluster)
 	}
 
-	// These fmt statements should be removed in the real implementation.
-	fmt.Printf("Observing: %+v", cr)
+	if meta.WasDeleted(cr) {
+		destroyLen, err := c.getObservedDestroyLen(ctx, cr)
+		if err != nil {
+			return managed.ExternalObservation{}, errors.Wrap(err, "failed to calculate observed length of destroyed resources")
+		}
+		if destroyLen > 0 {
+			return managed.ExternalObservation{ResourceExists: true}, nil
+		}
+		return managed.ExternalObservation{ResourceExists: false}, nil
+	}
 
-	return managed.ExternalObservation{
-		// Return false when the external resource does not exist. This lets
-		// the managed resource reconciler know that it needs to call Create to
-		// (re)create the resource, or that it has successfully been deleted.
-		ResourceExists: true,
+	syncResult, err := c.syncResultForCR(ctx, cr)
+	if err != nil {
+		return managed.ExternalObservation{}, errors.Wrap(err, "failed to sync")
+	}
 
-		// Return false when the external resource exists, but it not up to date
-		// with the desired managed resource state. This lets the managed
-		// resource reconciler know that it needs to call Update.
-		ResourceUpToDate: true,
+	c.logger.Debug("observe cluster", "syncResult", syncResult)
+	destroyLen := 0
+	for _, phase := range syncResult.Destroy {
+		destroyLen += len(phase)
+	}
 
-		// Return any details that may be required to connect to the external
-		// resource. These will be stored as the connection secret.
-		ConnectionDetails: managed.ConnectionDetails{},
-	}, nil
+	if len(syncResult.Update) == 0 && destroyLen == 0 {
+		return managed.ExternalObservation{ResourceExists: false}, nil
+	}
+
+	if len(syncResult.Create) > 0 || len(syncResult.Update) > 0 || destroyLen > 0 {
+		return managed.ExternalObservation{ResourceExists: true, ResourceUpToDate: false}, nil
+	}
+
+	// cr.Status.SetConditions(xpv1.Available())
+
+	// syncResult all equal to 0
+	return managed.ExternalObservation{ResourceExists: true, ResourceUpToDate: true}, nil
 }
 
 func (c *external) Create(ctx context.Context, mg resource.Managed) (managed.ExternalCreation, error) {
@@ -161,13 +226,22 @@ func (c *external) Create(ctx context.Context, mg resource.Managed) (managed.Ext
 		return managed.ExternalCreation{}, errors.New(errNotCluster)
 	}
 
-	fmt.Printf("Creating: %+v", cr)
+	syncResult, err := c.syncResultForCR(ctx, cr)
+	if err != nil {
+		return managed.ExternalCreation{}, errors.Wrap(err, "failed to sync")
+	}
 
+	st := c.client.Omni().State()
+	for _, r := range syncResult.Create {
+		if err = st.Create(ctx, r); err != nil {
+			return managed.ExternalCreation{}, errors.Wrap(err, "failed to create")
+		}
+	}
+
+	cd, err := c.getConnectionDetails(ctx, cr)
 	return managed.ExternalCreation{
-		// Optionally return any details that may be required to connect to the
-		// external resource. These will be stored as the connection secret.
-		ConnectionDetails: managed.ConnectionDetails{},
-	}, nil
+		ConnectionDetails: cd,
+	}, err
 }
 
 func (c *external) Update(ctx context.Context, mg resource.Managed) (managed.ExternalUpdate, error) {
@@ -176,13 +250,32 @@ func (c *external) Update(ctx context.Context, mg resource.Managed) (managed.Ext
 		return managed.ExternalUpdate{}, errors.New(errNotCluster)
 	}
 
-	fmt.Printf("Updating: %+v", cr)
+	syncResult, err := c.syncResultForCR(ctx, cr)
+	if err != nil {
+		return managed.ExternalUpdate{}, errors.Wrap(err, "failed to sync")
+	}
 
+	st := c.client.Omni().State()
+	for _, r := range syncResult.Create {
+		if err = st.Create(ctx, r); err != nil {
+			return managed.ExternalUpdate{}, errors.Wrap(err, "failed to create")
+		}
+	}
+	for _, p := range syncResult.Update {
+		if err = st.Update(ctx, p.New); err != nil {
+			return managed.ExternalUpdate{}, errors.Wrap(err, "failed to update")
+		}
+	}
+	for _, phase := range syncResult.Destroy {
+		if err := c.syncDeleteResources(ctx, phase); err != nil {
+			return managed.ExternalUpdate{}, errors.Wrap(err, "failed to destroy")
+		}
+	}
+
+	cd, err := c.getConnectionDetails(ctx, cr)
 	return managed.ExternalUpdate{
-		// Optionally return any details that may be required to connect to the
-		// external resource. These will be stored as the connection secret.
-		ConnectionDetails: managed.ConnectionDetails{},
-	}, nil
+		ConnectionDetails: cd,
+	}, err
 }
 
 func (c *external) Delete(ctx context.Context, mg resource.Managed) (managed.ExternalDelete, error) {
@@ -191,7 +284,155 @@ func (c *external) Delete(ctx context.Context, mg resource.Managed) (managed.Ext
 		return managed.ExternalDelete{}, errors.New(errNotCluster)
 	}
 
-	fmt.Printf("Deleting: %+v", cr)
+	st := c.client.Omni().State()
+
+	tmpl, err := c.loadTemplateForCR(cr)
+	if err != nil {
+		return managed.ExternalDelete{}, err
+	}
+
+	syncResult, err := tmpl.Delete(ctx, st)
+	if err != nil {
+		return managed.ExternalDelete{}, errors.Wrap(err, "failed to get SyncResult for delete")
+	}
+
+	for _, phase := range syncResult.Destroy {
+		if err := c.syncDeleteResources(ctx, phase); err != nil {
+			return managed.ExternalDelete{}, errors.Wrap(err, "failed to destroy")
+		}
+	}
+
+	c.logger.Debug("DELETION SUCCESSFUL!")
 
 	return managed.ExternalDelete{}, nil
+}
+
+func (c *external) getObservedDestroyLen(ctx context.Context, cr *v1alpha1.Cluster) (int, error) {
+	st := c.client.Omni().State()
+
+	tmpl, err := c.loadTemplateForCR(cr)
+	if err != nil {
+		return -1, err
+	}
+
+	syncResult, err := tmpl.Delete(ctx, st)
+	if err != nil {
+		return -1, errors.Wrap(err, "failed to get SyncResult for delete")
+	}
+
+	destroyLen := 0
+	for _, phase := range syncResult.Destroy {
+		destroyLen += len(phase)
+	}
+	return destroyLen, nil
+}
+
+func (c *external) getConnectionDetails(ctx context.Context, cr *v1alpha1.Cluster) (managed.ConnectionDetails, error) {
+	ttl, _ := time.ParseDuration("8760h0m0s") // TODO: 1 year, we should somehow autorotate!
+	data, err := c.client.Management().
+		WithCluster(cr.Spec.ForProvider.Name).
+		Kubeconfig(ctx, management.WithServiceAccount(
+			ttl,
+			"admin",
+			"system:masters",
+		))
+	c.logger.Debug("connection details", "kubeconfig", string(data), "error", err)
+	return managed.ConnectionDetails{"kubeconfig": data}, err
+}
+
+func (c *external) loadTemplateForCR(cr *v1alpha1.Cluster) (*omnitemplate.Template, error) {
+	var buf bytes.Buffer
+	err := clusterTemplate.Execute(&buf, cr.Spec.ForProvider)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to execute go template")
+	}
+
+	tmpl, err := omnitemplate.Load(&buf)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to load template")
+	}
+
+	if err = tmpl.Validate(); err != nil {
+		return nil, errors.Wrap(err, "failed to validate template")
+	}
+
+	return tmpl, nil
+}
+
+func (c *external) syncResultForCR(ctx context.Context, cr *v1alpha1.Cluster) (*omnitemplate.SyncResult, error) {
+	st := c.client.Omni().State()
+
+	tmpl, err := c.loadTemplateForCR(cr)
+	if err != nil {
+		return nil, err
+	}
+
+	return tmpl.Sync(ctx, st)
+}
+
+// https://github.com/siderolabs/omni/blob/main/client/pkg/template/operations/sync.go#L115
+//
+//nolint:gocognit,gocyclo,cyclop
+func (c *external) syncDeleteResources(ctx context.Context, toDelete []cosiresource.Resource) error {
+	st := c.client.Omni().State()
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	teardownWatch := make(chan cosistate.Event)
+	tearingDownResourceTypes := map[cosiresource.Type]struct{}{}
+
+	for _, r := range toDelete {
+		tearingDownResourceTypes[r.Metadata().Type()] = struct{}{}
+	}
+
+	for resourceType := range tearingDownResourceTypes {
+		if err := st.WatchKind(ctx, cosiresource.NewMetadata(resources.DefaultNamespace, resourceType, "", cosiresource.VersionUndefined), teardownWatch, cosistate.WithBootstrapContents(true)); err != nil {
+			return err
+		}
+	}
+
+	tearingDownResources := map[string]struct{}{}
+
+	for _, r := range toDelete {
+		if _, err := st.Teardown(ctx, r.Metadata()); err != nil && !cosistate.IsNotFoundError(err) {
+			return err
+		}
+
+		tearingDownResources[describe(r)] = struct{}{}
+	}
+
+	for len(tearingDownResources) > 0 {
+		var event cosistate.Event
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case event = <-teardownWatch:
+		}
+
+		switch event.Type {
+		case cosistate.Updated, cosistate.Created:
+			if _, ok := tearingDownResources[describe(event.Resource)]; ok {
+				if event.Resource.Metadata().Phase() == cosiresource.PhaseTearingDown && event.Resource.Metadata().Finalizers().Empty() {
+					if err := st.Destroy(ctx, event.Resource.Metadata()); err != nil && !cosistate.IsNotFoundError(err) {
+						return err
+					}
+				}
+			}
+		case cosistate.Destroyed:
+			delete(tearingDownResources, describe(event.Resource))
+		case cosistate.Bootstrapped:
+			// ignore
+		case cosistate.Errored:
+			return event.Error
+		}
+	}
+
+	return nil
+}
+
+// https://github.com/siderolabs/omni/blob/main/client/pkg/template/operations/internal/utils/utils.go
+func describe(r cosiresource.Resource) string {
+	return fmt.Sprintf("%s(%s)", r.Metadata().Type(), r.Metadata().ID())
 }

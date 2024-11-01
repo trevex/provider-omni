@@ -155,7 +155,7 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 
 	expectedMC := machineClassForCR(cr)
 	// Let's copy over metadata to minimize the diff
-	err = syncOmniMetadata(expectedMC, actualMC)
+	err = syncCOSIMetadata(expectedMC, actualMC)
 	if err != nil {
 		return managed.ExternalObservation{}, errors.Wrap(err, "failed to sync metadata")
 	}
@@ -212,7 +212,7 @@ func (c *external) Update(ctx context.Context, mg resource.Managed) (managed.Ext
 	}
 
 	newMC := machineClassForCR(cr)
-	err = syncOmniMetadata(newMC, oldMC)
+	err = syncCOSIMetadata(newMC, oldMC)
 	if err != nil {
 		return managed.ExternalUpdate{}, errors.Wrap(err, "failed to sync metadata")
 	}
@@ -265,12 +265,12 @@ func pointerForCR(cr *v1alpha1.MachineClass) cosiresource.Pointer {
 	return cosiresource.NewMetadata(resources.DefaultNamespace, resourcesomni.MachineClassType, cr.Spec.ForProvider.Name, cosiresource.VersionUndefined)
 }
 
-func syncOmniMetadata(expectedMC, actualMC *resourcesomni.MachineClass) error {
-	expectedMC.Metadata().SetVersion(actualMC.Metadata().Version())
-	expectedMC.Metadata().SetUpdated(actualMC.Metadata().Updated())
-	expectedMC.Metadata().SetCreated(actualMC.Metadata().Created())
-	expectedMC.Metadata().Finalizers().Set(*actualMC.Metadata().Finalizers())
-	err := expectedMC.Metadata().SetOwner(actualMC.Metadata().Owner())
-	expectedMC.Metadata().SetPhase(actualMC.Metadata().Phase())
+func syncCOSIMetadata(dst, src cosiresource.Resource) error {
+	dst.Metadata().SetVersion(src.Metadata().Version())
+	dst.Metadata().SetUpdated(src.Metadata().Updated())
+	dst.Metadata().SetCreated(src.Metadata().Created())
+	dst.Metadata().Finalizers().Set(*src.Metadata().Finalizers())
+	err := dst.Metadata().SetOwner(src.Metadata().Owner())
+	dst.Metadata().SetPhase(src.Metadata().Phase())
 	return err
 }

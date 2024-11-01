@@ -25,9 +25,29 @@ import (
 	xpv1 "github.com/crossplane/crossplane-runtime/apis/common/v1"
 )
 
+type ClusterMachineClass struct {
+	Name string `json:"name"`
+	Size uint   `json:"size"`
+}
+
+type ClusterControlPlane struct {
+	MachineClass ClusterMachineClass `json:"machineClass"`
+}
+
+type ClusterWorker struct {
+	Name         string              `json:"name"`
+	MachineClass ClusterMachineClass `json:"machineClass"`
+	Size         uint                `json:"size"`
+}
+
 // ClusterParameters are the configurable fields of a Cluster.
 type ClusterParameters struct {
-	ConfigurableField string `json:"configurableField"`
+	Name              string              `json:"name"`
+	KubernetesVersion string              `json:"kubernetesVersion"`
+	TalosVersion      string              `json:"talosVersion"`
+	ConfigPatch       string              `json:"configPatch"`
+	ControlPlane      ClusterControlPlane `json:"controlPlane"`
+	Workers           []ClusterWorker     `json:"workers"`
 }
 
 // ClusterObservation are the observable fields of a Cluster.
