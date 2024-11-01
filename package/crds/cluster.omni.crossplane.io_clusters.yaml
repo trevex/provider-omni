@@ -300,7 +300,8 @@ spec:
               atProvider:
                 description: ClusterObservation are the observable fields of a Cluster.
                 properties:
-                  observableField:
+                  kubeconfigExpiry:
+                    format: date-time
                     type: string
                 type: object
               conditions:

@@ -31,10 +31,12 @@ import (
 	"github.com/siderolabs/omni/client/pkg/client/management"
 	"github.com/siderolabs/omni/client/pkg/omni/resources"
 	omnitemplate "github.com/siderolabs/omni/client/pkg/template"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	xpv1 "github.com/crossplane/crossplane-runtime/apis/common/v1"
 	"github.com/crossplane/crossplane-runtime/pkg/connection"
 	"github.com/crossplane/crossplane-runtime/pkg/controller"
 	"github.com/crossplane/crossplane-runtime/pkg/event"
@@ -206,7 +208,7 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 		destroyLen += len(phase)
 	}
 
-	if len(syncResult.Update) == 0 && destroyLen == 0 {
+	if len(syncResult.Create) != 0 && len(syncResult.Update) == 0 && destroyLen == 0 {
 		return managed.ExternalObservation{ResourceExists: false}, nil
 	}
 
@@ -214,10 +216,33 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 		return managed.ExternalObservation{ResourceExists: true, ResourceUpToDate: false}, nil
 	}
 
-	// cr.Status.SetConditions(xpv1.Available())
+	cd := managed.ConnectionDetails{}
+	if cr.Status.AtProvider.KubeconfigExpiry == nil || cr.Status.AtProvider.KubeconfigExpiry.Time.Before(time.Now()) {
+		ttl, _ := time.ParseDuration("8760h0m0s")
+		data, err := c.client.Management().
+			WithCluster(cr.Spec.ForProvider.Name).
+			Kubeconfig(ctx, management.WithServiceAccount(
+				ttl,
+				"admin",
+				"system:masters",
+			))
+		if err != nil {
+			return managed.ExternalObservation{}, errors.Wrap(err, "failed to fetch kubeconfig")
+		}
+		expiry := metav1.NewTime(time.Now().Add(ttl - time.Hour))
+		cr.Status.AtProvider.KubeconfigExpiry = &expiry
+		c.logger.Debug("connection details", "kubeconfig", string(data), "error", err)
+		cd["kubeconfig"] = data
+	}
+
+	cr.Status.SetConditions(xpv1.Available())
 
 	// syncResult all equal to 0
-	return managed.ExternalObservation{ResourceExists: true, ResourceUpToDate: true}, nil
+	return managed.ExternalObservation{
+		ResourceExists:    true,
+		ResourceUpToDate:  true,
+		ConnectionDetails: cd,
+	}, nil
 }
 
 func (c *external) Create(ctx context.Context, mg resource.Managed) (managed.ExternalCreation, error) {
@@ -238,10 +263,7 @@ func (c *external) Create(ctx context.Context, mg resource.Managed) (managed.Ext
 		}
 	}
 
-	cd, err := c.getConnectionDetails(ctx, cr)
-	return managed.ExternalCreation{
-		ConnectionDetails: cd,
-	}, err
+	return managed.ExternalCreation{}, err
 }
 
 func (c *external) Update(ctx context.Context, mg resource.Managed) (managed.ExternalUpdate, error) {
@@ -272,10 +294,7 @@ func (c *external) Update(ctx context.Context, mg resource.Managed) (managed.Ext
 		}
 	}
 
-	cd, err := c.getConnectionDetails(ctx, cr)
-	return managed.ExternalUpdate{
-		ConnectionDetails: cd,
-	}, err
+	return managed.ExternalUpdate{}, err
 }
 
 func (c *external) Delete(ctx context.Context, mg resource.Managed) (managed.ExternalDelete, error) {
@@ -325,19 +344,6 @@ func (c *external) getObservedDestroyLen(ctx context.Context, cr *v1alpha1.Clust
 		destroyLen += len(phase)
 	}
 	return destroyLen, nil
-}
-
-func (c *external) getConnectionDetails(ctx context.Context, cr *v1alpha1.Cluster) (managed.ConnectionDetails, error) {
-	ttl, _ := time.ParseDuration("8760h0m0s") // TODO: 1 year, we should somehow autorotate!
-	data, err := c.client.Management().
-		WithCluster(cr.Spec.ForProvider.Name).
-		Kubeconfig(ctx, management.WithServiceAccount(
-			ttl,
-			"admin",
-			"system:masters",
-		))
-	c.logger.Debug("connection details", "kubeconfig", string(data), "error", err)
-	return managed.ConnectionDetails{"kubeconfig": data}, err
 }
 
 func (c *external) loadTemplateForCR(cr *v1alpha1.Cluster) (*omnitemplate.Template, error) {

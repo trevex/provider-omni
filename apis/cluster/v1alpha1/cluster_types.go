@@ -52,7 +52,7 @@ type ClusterParameters struct {
 
 // ClusterObservation are the observable fields of a Cluster.
 type ClusterObservation struct {
-	ObservableField string `json:"observableField,omitempty"`
+	KubeconfigExpiry *metav1.Time `json:"kubeconfigExpiry,omitempty"`
 }
 
 // A ClusterSpec defines the desired state of a Cluster.
