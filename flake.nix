@@ -26,6 +26,7 @@
             go
             golangci-lint
             delve
+            crossplane-cli
           ];
         };
       }

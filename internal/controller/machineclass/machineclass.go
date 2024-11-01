@@ -38,10 +38,10 @@ import (
 )
 
 const (
-	errNotMachineClass    = "managed resource is not a MachineClass custom resource"
-	errTrackPCUsage = "cannot track ProviderConfig usage"
-	errGetPC        = "cannot get ProviderConfig"
-	errGetCreds     = "cannot get credentials"
+	errNotMachineClass = "managed resource is not a MachineClass custom resource"
+	errTrackPCUsage    = "cannot track ProviderConfig usage"
+	errGetPC           = "cannot get ProviderConfig"
+	errGetCreds        = "cannot get credentials"
 
 	errNewClient = "cannot create new Service"
 )

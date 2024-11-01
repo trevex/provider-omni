@@ -28,6 +28,7 @@ import (
 // A ProviderConfigSpec defines the desired state of a ProviderConfig.
 type ProviderConfigSpec struct {
 	// Credentials required to authenticate to this provider.
+	Endpoint    string              `json:"endpoint"`
 	Credentials ProviderCredentials `json:"credentials"`
 }
 

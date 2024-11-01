@@ -74,9 +74,39 @@ spec:
                 description: MachineClassParameters are the configurable fields of
                   a MachineClass.
                 properties:
+                  autoprovision:
+                    properties:
+                      kernelArgs:
+                        items:
+                          type: string
+                        type: array
+                      providerID:
+                        type: string
+                      resources:
+                        properties:
+                          architecture:
+                            type: string
+                          cpu:
+                            type: integer
+                          diskSize:
+                            type: integer
+                          memory:
+                            type: integer
+                        required:
+                        - architecture
+                        - cpu
+                        - diskSize
+                        - memory
+                        type: object
+                    required:
+                    - kernelArgs
+                    - providerID
+                    - resources
+                    type: object
                   configurableField:
                     type: string
                 required:
+                - autoprovision
                 - configurableField
                 type: object
               managementPolicies:

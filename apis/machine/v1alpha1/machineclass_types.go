@@ -25,9 +25,23 @@ import (
 	xpv1 "github.com/crossplane/crossplane-runtime/apis/common/v1"
 )
 
+type MachineClassResources struct {
+	CPU          uint   `json:"cpu"`
+	Memory       uint   `json:"memory"`
+	DiskSize     uint   `json:"diskSize"`
+	Architecture string `json:"architecture"`
+}
+
+type MachineClassAutoprovision struct {
+	ProviderID string                `json:"providerID"`
+	KernelArgs []string              `json:"kernelArgs"`
+	Resources  MachineClassResources `json:"resources"`
+}
+
 // MachineClassParameters are the configurable fields of a MachineClass.
 type MachineClassParameters struct {
-	ConfigurableField string `json:"configurableField"`
+	Autoprovision     MachineClassAutoprovision `json:"autoprovision"`
+	ConfigurableField string                    `json:"configurableField"`
 }
 
 // MachineClassObservation are the observable fields of a MachineClass.
