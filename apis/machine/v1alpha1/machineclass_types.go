@@ -33,9 +33,10 @@ type MachineClassResources struct {
 }
 
 type MachineClassAutoprovision struct {
-	ProviderID string                `json:"providerID"`
-	KernelArgs []string              `json:"kernelArgs"`
-	Resources  MachineClassResources `json:"resources"`
+	ProviderID      string                `json:"providerID"`
+	KernelArgs      []string              `json:"kernelArgs"`
+	TargetNamespace string                `json:"targetNamespace"`
+	Resources       MachineClassResources `json:"resources"`
 }
 
 // MachineClassParameters are the configurable fields of a MachineClass.

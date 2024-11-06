@@ -98,10 +98,13 @@ spec:
                         - diskSize
                         - memory
                         type: object
+                      targetNamespace:
+                        type: string
                     required:
                     - kernelArgs
                     - providerID
                     - resources
+                    - targetNamespace
                     type: object
                   name:
                     type: string
