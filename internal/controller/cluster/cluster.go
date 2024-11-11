@@ -31,8 +31,11 @@ import (
 	"github.com/siderolabs/omni/client/pkg/client/management"
 	"github.com/siderolabs/omni/client/pkg/omni/resources"
 	omnitemplate "github.com/siderolabs/omni/client/pkg/template"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -235,7 +238,10 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 		cd["kubeconfig"] = data
 	}
 
-	cr.Status.SetConditions(xpv1.Available())
+	isReady := cr.Status.GetCondition(xpv1.TypeReady).Status == v1.ConditionTrue
+	if !isReady && c.isAPIServerReady(ctx, cr.Spec.ForProvider.Name) {
+		cr.Status.SetConditions(xpv1.Available())
+	}
 
 	// syncResult all equal to 0
 	return managed.ExternalObservation{
@@ -324,6 +330,41 @@ func (c *external) Delete(ctx context.Context, mg resource.Managed) (managed.Ext
 	c.logger.Debug("DELETION SUCCESSFUL!")
 
 	return managed.ExternalDelete{}, nil
+}
+
+func (c *external) isAPIServerReady(ctx context.Context, clusterName string) bool {
+	ttl, _ := time.ParseDuration("2m0s") // TODO: set to timeout of context?
+	data, err := c.client.Management().
+		WithCluster(clusterName).
+		Kubeconfig(ctx, management.WithServiceAccount(
+			ttl,
+			"connection-test",
+			"system:masters", // TODO: reduce permissions
+		))
+	if err != nil {
+		c.logger.Debug("failed to get kubeconfig for connection test", "error", err)
+		return false
+	}
+
+	config, err := clientcmd.RESTConfigFromKubeConfig(data)
+	if err != nil {
+		c.logger.Debug("failed to create config from kubeconfig", "error", err)
+		return false
+	}
+
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		c.logger.Debug("failed to create clientset for config", "error", err)
+		return false
+	}
+
+	_, err = clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		c.logger.Debug("failed to fetch pods", "error", err)
+		return false
+	}
+
+	return true
 }
 
 func (c *external) getObservedDestroyLen(ctx context.Context, cr *v1alpha1.Cluster) (int, error) {
